@@ -2523,7 +2523,7 @@ class IndegoHub:
 
     async def start_periodic_position_update(self):
         self._unsub_map_timer = async_track_time_interval(
-            self._hass, self._check_position_and_state, timedelta(seconds=60)
+            self._hass, self._check_position_and_state, timedelta(seconds=10)
         )
 
     async def _check_position_and_state(self, now):
