@@ -1696,6 +1696,8 @@ class IndegoHub:
         self._last_successful_update = None  # Track last successful API response
         self._last_service_error = None  # Track last Bosch service error (5xx)
         self._consecutive_timeouts = 0  # Track consecutive position update timeouts
+        self._position_backoff = 0  # Seconds to wait after a 429 from Bosch; 0 means no back-off
+        self._position_skip_until = 0.0
         self._last_timeout_warning_time = None  # Prevent timeout spam
         self._forced_mowing_mode = None # force mowing mode and calendar sensors to update
 
@@ -2539,10 +2541,23 @@ class IndegoHub:
                 current_state,
             )
             return
-            
+
+        if time.time() < self._position_skip_until:
+            return  # still backing off after a 429 from Bosch
+
         try:
             _LOGGER.debug("Fetching latest mower position and state")
             await self._indego_client.update_state(force=True)
+        except ClientResponseError as exc:
+            if exc.status == 429:
+                # Bosch is rate-limiting this account: double the wait, up to 15 minutes
+                self._position_backoff = min(max(60, self._position_backoff * 2), 900)
+                self._position_skip_until = time.time() + self._position_backoff
+                _LOGGER.warning("Bosch returned 429; pausing position polls for %d s", self._position_backoff)
+                return
+            self._consecutive_timeouts = 0
+            _LOGGER.debug("Error fetching position (current state: %s): %s", self._last_state, str(exc))
+            return
         except asyncio.TimeoutError:
             # Track consecutive timeouts to implement backoff
             self._consecutive_timeouts += 1
@@ -2564,9 +2579,10 @@ class IndegoHub:
             _LOGGER.debug("Error fetching position (current state: %s): %s", self._last_state, str(e))
             return
 
-        # Successful update - reset timeout counter
+        # Successful update - reset timeout counter and back-off
         self._consecutive_timeouts = 0
         self._last_timeout_warning_time = None
+        self._position_backoff = 0
 
         try:
             state = self._indego_client.state
